@@ -220,21 +220,29 @@ run_swiftformat() {
 
   local changed=0 skipped=0
   for f in "${files[@]}"; do
-    # Check write permission first — tools fail silently without it
     check_writable "$f" || { (( skipped++ )) || true; continue; }
 
-    local before after sf_err exit_code
+    local before after sf_out sf_err exit_code
     before="$(checksum "$f")"
 
-    # stdout → /dev/null keeps SwiftFormat in file-modification mode.
-    # stderr → temp file so permission/config errors are never lost.
-    sf_err="$(mktemp)"
-    "$SF_BIN" "${sf_args[@]}" "$f" >/dev/null 2>"$sf_err" && exit_code=0 || exit_code=$?
-    if [[ $exit_code -ne 0 || -s "$sf_err" ]]; then
-      warn "  swiftformat issue on ${f#"$REPO_ROOT"/} (exit $exit_code):"
-      while IFS= read -r line; do warn "    $line"; done < "$sf_err"
+    # Capture stdout + stderr to separate temp files.
+    # Do NOT pipe stdout — some SwiftFormat versions detect a pipe and write
+    # the formatted result to stdout instead of modifying the file in place.
+    sf_out="$(mktemp)" sf_err="$(mktemp)"
+    "$SF_BIN" "${sf_args[@]}" "$f" >"$sf_out" 2>"$sf_err" && exit_code=0 || exit_code=$?
+
+    # Show SwiftFormat stdout (filtered — suppress routine status lines)
+    grep -Ev "^\s*$|^Running SwiftFormat|^$" "$sf_out" 2>/dev/null || true
+
+    # Only show stderr on actual errors (non-zero exit or lines containing "error:")
+    if [[ $exit_code -ne 0 ]]; then
+      warn "  swiftformat failed (exit $exit_code) on ${f#"$REPO_ROOT"/}:"
+      while IFS= read -r line; do [[ -n "$line" ]] && warn "    $line"; done < "$sf_err"
+    elif grep -qiE "\berror\b|\bfatal\b" "$sf_err" 2>/dev/null; then
+      warn "  swiftformat error on ${f#"$REPO_ROOT"/}:"
+      grep -iE "\berror\b|\bfatal\b" "$sf_err" | while IFS= read -r line; do warn "    $line"; done
     fi
-    rm -f "$sf_err"
+    rm -f "$sf_out" "$sf_err"
 
     after="$(checksum "$f")"
     if [[ "$before" != "$after" ]]; then
@@ -264,16 +272,22 @@ run_swiftlint_fix() {
   for f in "${files[@]}"; do
     check_writable "$f" || { (( skipped++ )) || true; continue; }
 
-    local before after sl_err exit_code
+    local before after sl_out sl_err exit_code
     before="$(checksum "$f")"
 
-    sl_err="$(mktemp)"
-    "$SL_BIN" --fix "${sl_args[@]}" "$f" >/dev/null 2>"$sl_err" && exit_code=0 || exit_code=$?
-    if [[ $exit_code -ne 0 || -s "$sl_err" ]]; then
-      warn "  swiftlint issue on ${f#"$REPO_ROOT"/} (exit $exit_code):"
-      while IFS= read -r line; do warn "    $line"; done < "$sl_err"
+    # SwiftLint writes "Correcting..." / "Done correcting..." to stderr normally.
+    # Capture both streams; only surface real errors.
+    sl_out="$(mktemp)" sl_err="$(mktemp)"
+    "$SL_BIN" --fix "${sl_args[@]}" "$f" >"$sl_out" 2>"$sl_err" && exit_code=0 || exit_code=$?
+
+    if [[ $exit_code -ne 0 ]]; then
+      warn "  swiftlint --fix failed (exit $exit_code) on ${f#"$REPO_ROOT"/}:"
+      while IFS= read -r line; do [[ -n "$line" ]] && warn "    $line"; done < "$sl_err"
+    elif grep -qiE "\berror\b|\bfatal\b" "$sl_err" 2>/dev/null; then
+      warn "  swiftlint error on ${f#"$REPO_ROOT"/}:"
+      grep -iE "\berror\b|\bfatal\b" "$sl_err" | while IFS= read -r line; do warn "    $line"; done
     fi
-    rm -f "$sl_err"
+    rm -f "$sl_out" "$sl_err"
 
     after="$(checksum "$f")"
     if [[ "$before" != "$after" ]]; then
@@ -349,5 +363,14 @@ else
   fi
 fi
 
+divider
+log "Disk diff summary (what actually changed):"
+if git diff --quiet -- "${files[@]}" 2>/dev/null; then
+  warn "  git diff shows no changes on disk — files may already match the rules"
+  warn "  or the formatter found nothing to do for your specific change."
+  warn "  Try running manually: swiftformat <file>  and inspect output."
+else
+  git diff --stat -- "${files[@]}" 2>/dev/null || true
+fi
 divider
 ok "All done ✓"
