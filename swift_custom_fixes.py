@@ -497,7 +497,7 @@ def split_top_level_params(params_str: str) -> list:
 
 # ── Core expander ─────────────────────────────────────────────────────────────
 
-def expand_params(line: str, max_len: int, indent_unit: str) -> list | None:
+def expand_params(line: str, max_len: int, indent_unit: str) -> Optional[list]:
     """
     When a line exceeds max_len and contains a function definition or call
     with multiple comma-separated parameters, expand to one-param-per-line:
