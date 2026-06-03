@@ -209,7 +209,7 @@ run_swiftformat() {
   for f in "${files[@]}"; do
     local before after
     before="$(checksum "$f")"
-    "$SF_BIN" "${sf_args[@]}" -- "$f" 2>&1 \
+    "$SF_BIN" "${sf_args[@]}" "$f" 2>&1 \
       | grep -Ev "^(Running SwiftFormat|No files matched|1 file formatted)" || true
     after="$(checksum "$f")"
     if [[ "$before" != "$after" ]]; then
@@ -237,7 +237,7 @@ run_swiftlint_fix() {
   for f in "${files[@]}"; do
     local before after
     before="$(checksum "$f")"
-    "$SL_BIN" --fix "${sl_args[@]}" -- "$f" 2>&1 \
+    "$SL_BIN" --fix "${sl_args[@]}" "$f" 2>&1 \
       | grep -Ev "^(Done linting|Linting ')" || true
     after="$(checksum "$f")"
     if [[ "$before" != "$after" ]]; then
@@ -292,7 +292,7 @@ if $DRY_RUN; then
 else
   lint_output=""
   for f in "${files[@]}"; do
-    lint_output+="$("$SL_BIN" lint "${sl_args[@]}" --reporter emoji -- "$f" 2>&1 || true)"$'\n'
+    lint_output+="$("$SL_BIN" lint "${sl_args[@]}" --reporter emoji "$f" 2>&1 || true)"$'\n'
   done
 
   [[ -n "${lint_output// /}" ]] && echo "$lint_output"
