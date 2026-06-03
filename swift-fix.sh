@@ -69,8 +69,17 @@ for p in "${POSITIONAL[@]+"${POSITIONAL[@]}"}"; do
   expanded_pos+=("${p/#\~/$HOME}")
 done
 
+# ─── Dedup helper (bash 3.2 safe — no associative arrays needed) ─────────────
+in_array() {
+  local needle="$1"; shift
+  local item
+  for item in "$@"; do
+    [[ "$item" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
 # ─── Resolve file mode vs repo mode ──────────────────────────────────────────
-declare -A seen
 files=()
 MODE=""
 
@@ -97,7 +106,7 @@ else
       || { err "File not found: $p"; exit 1; }
     [[ "$abs" == *.swift ]] || { warn "Skipping non-Swift file: $abs"; continue; }
     [[ -f "$abs" ]]          || { err "File not found: $abs"; exit 1; }
-    [[ -z "${seen[$abs]+x}" ]] && { seen["$abs"]=1; files+=("$abs"); }
+    in_array "$abs" "${files[@]+"${files[@]}"}" || files+=("$abs")
   done
   REPO_ROOT="$(git -C "$(dirname "${files[0]}")" rev-parse --show-toplevel 2>/dev/null)" \
     || { err "Files must be inside a git repository."; exit 1; }
@@ -106,13 +115,16 @@ fi
 # ─── Collect git-diff files ───────────────────────────────────────────────────
 if [[ "$MODE" == "git-diff" ]]; then
   cd "$REPO_ROOT"
+  # sort -u deduplicates staged + unstaged output — no associative array needed
   while IFS= read -r rel; do
     [[ -z "$rel" ]] && continue
     abs="$REPO_ROOT/$rel"
-    [[ -f "$abs" && -z "${seen[$abs]+x}" ]] && { seen["$abs"]=1; files+=("$abs"); }
+    [[ -f "$abs" ]] && files+=("$abs")
   done < <(
-    git diff          --name-only --diff-filter=ACMR -- '*.swift' 2>/dev/null
-    git diff --cached --name-only --diff-filter=ACMR -- '*.swift' 2>/dev/null
+    {
+      git diff          --name-only --diff-filter=ACMR -- '*.swift' 2>/dev/null
+      git diff --cached --name-only --diff-filter=ACMR -- '*.swift' 2>/dev/null
+    } | sort -u
   )
 fi
 
