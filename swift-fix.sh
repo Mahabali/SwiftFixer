@@ -194,23 +194,48 @@ divider
 # ─── Checksum helper ─────────────────────────────────────────────────────────
 checksum() { md5 -q "$1" 2>/dev/null || md5sum "$1" 2>/dev/null | awk '{print $1}'; }
 
+# ─── Permission check ────────────────────────────────────────────────────────
+# Call before running any tool. Prints a clear error and returns 1 if the
+# file is not writable so the caller can skip it rather than fail silently.
+check_writable() {
+  local f="$1"
+  if [[ ! -w "$f" ]]; then
+    err "Permission denied (not writable): ${f#"$REPO_ROOT"/}"
+    err "  Run: chmod u+w \"$f\" to fix, or check file ownership with: ls -la \"$f\""
+    return 1
+  fi
+  return 0
+}
+
 # ─── Reusable SwiftFormat runner ─────────────────────────────────────────────
 run_swiftformat() {
-  local label="$1"
+  local label="$1" f
   local sf_args=()
   [[ -n "$SF_CONFIG" ]] && sf_args+=("--config" "$SF_CONFIG")
 
   if $DRY_RUN; then
-    log "[dry-run] $SF_BIN ${sf_args[*]:-<no config>} -- <file> × ${#files[@]}"
+    log "[dry-run] $SF_BIN ${sf_args[*]:-<no config>} <file> × ${#files[@]}"
     return
   fi
 
-  local changed=0
+  local changed=0 skipped=0
   for f in "${files[@]}"; do
-    local before after
+    # Check write permission first — tools fail silently without it
+    check_writable "$f" || { (( skipped++ )) || true; continue; }
+
+    local before after sf_err exit_code
     before="$(checksum "$f")"
-    "$SF_BIN" "${sf_args[@]}" "$f" 2>&1 \
-      | grep -Ev "^(Running SwiftFormat|No files matched|1 file formatted)" || true
+
+    # stdout → /dev/null keeps SwiftFormat in file-modification mode.
+    # stderr → temp file so permission/config errors are never lost.
+    sf_err="$(mktemp)"
+    "$SF_BIN" "${sf_args[@]}" "$f" >/dev/null 2>"$sf_err" && exit_code=0 || exit_code=$?
+    if [[ $exit_code -ne 0 || -s "$sf_err" ]]; then
+      warn "  swiftformat issue on ${f#"$REPO_ROOT"/} (exit $exit_code):"
+      while IFS= read -r line; do warn "    $line"; done < "$sf_err"
+    fi
+    rm -f "$sf_err"
+
     after="$(checksum "$f")"
     if [[ "$before" != "$after" ]]; then
       log "  formatted → ${f#"$REPO_ROOT"/}"
@@ -218,6 +243,7 @@ run_swiftformat() {
     fi
   done
 
+  [[ $skipped -gt 0 ]] && warn "$label — $skipped file(s) skipped (permission denied)"
   [[ $changed -eq 0 ]] \
     && ok "$label — no changes needed" \
     || ok "$label — $changed file(s) updated"
@@ -225,20 +251,30 @@ run_swiftformat() {
 
 # ─── Reusable SwiftLint fix runner ───────────────────────────────────────────
 run_swiftlint_fix() {
+  local f
   local sl_args=()
   [[ -n "$SL_CONFIG" ]] && sl_args+=("--config" "$SL_CONFIG")
 
   if $DRY_RUN; then
-    log "[dry-run] $SL_BIN --fix ${sl_args[*]:-<no config>} -- <file> × ${#files[@]}"
+    log "[dry-run] $SL_BIN --fix ${sl_args[*]:-<no config>} <file> × ${#files[@]}"
     return
   fi
 
-  local changed=0
+  local changed=0 skipped=0
   for f in "${files[@]}"; do
-    local before after
+    check_writable "$f" || { (( skipped++ )) || true; continue; }
+
+    local before after sl_err exit_code
     before="$(checksum "$f")"
-    "$SL_BIN" --fix "${sl_args[@]}" "$f" 2>&1 \
-      | grep -Ev "^(Done linting|Linting ')" || true
+
+    sl_err="$(mktemp)"
+    "$SL_BIN" --fix "${sl_args[@]}" "$f" >/dev/null 2>"$sl_err" && exit_code=0 || exit_code=$?
+    if [[ $exit_code -ne 0 || -s "$sl_err" ]]; then
+      warn "  swiftlint issue on ${f#"$REPO_ROOT"/} (exit $exit_code):"
+      while IFS= read -r line; do warn "    $line"; done < "$sl_err"
+    fi
+    rm -f "$sl_err"
+
     after="$(checksum "$f")"
     if [[ "$before" != "$after" ]]; then
       log "  fixed → ${f#"$REPO_ROOT"/}"
@@ -246,6 +282,7 @@ run_swiftlint_fix() {
     fi
   done
 
+  [[ $skipped -gt 0 ]] && warn "SwiftLint auto-fix — $skipped file(s) skipped (permission denied)"
   [[ $changed -eq 0 ]] \
     && ok "SwiftLint auto-fix — no changes needed" \
     || ok "SwiftLint auto-fix — $changed file(s) updated"
